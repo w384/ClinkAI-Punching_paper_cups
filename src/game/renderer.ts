@@ -22,6 +22,8 @@ export interface RenderState {
   timeLeftMs: number
   durationMs: number
   lastShot: ShotOutcome | null
+  /** 最近一次小豆命中的杯子 id（null = 打空） */
+  lastHitId: number | null
   lastTopple: ToppleInfo | null
   summary: SessionSummary
   loopCountdownMs: number
@@ -230,6 +232,7 @@ export class CupRenderer {
     this.projLayer.removeChildren()
     for (const p of s.projectiles) {
       const g = new Graphics()
+      g.alpha = p.alpha
       // 拖尾：沿速度反方向
       const len = Math.min(26, Math.hypot(p.vx, p.vy) * 0.03)
       const nx = p.vx / (Math.hypot(p.vx, p.vy) || 1)
@@ -249,7 +252,7 @@ export class CupRenderer {
   private drawLaser(s: RenderState): void {
     const g = this.laserLayer
     g.clear()
-    const firing = s.lastShot?.contacted ? 1.6 : 1
+    const firing = s.lastHitId != null ? 1.6 : 1
     const glow = (0.55 + 0.25 * Math.sin(this.pulse * 5)) * firing
     const active = s.phase === 'running'
     g.circle(HIT_POINT.x, HIT_POINT.y, 17 * firing).fill({ color: '#3dff92', alpha: active ? 0.16 * glow : 0.05 })
@@ -262,8 +265,8 @@ export class CupRenderer {
 
   /** 命中火花：落在被打的那只杯子上 */
   private updateFx(s: RenderState, dtMs: number): void {
-    if (s.lastShot?.contacted && s.lastShot.targetId != null) {
-      const cup = s.cups.find((c) => c.id === s.lastShot!.targetId)
+    if (s.lastHitId != null) {
+      const cup = s.cups.find((c) => c.id === s.lastHitId)
       if (cup) {
         const p = project(cup, s.worldAngle, s.tower)
         this.fx.push({ x: p.x, y: p.y - s.tower.cupH * 0.55, age: 0 })

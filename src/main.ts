@@ -25,6 +25,7 @@ async function main(): Promise<void> {
   const trigger = new CompositeTriggerSource([local, keyboard])
   const audio = new CartoonAudio()
   let lastShot: ShotOutcome | null = null
+  let lastHitId: number | null = null
   let lastTopple: ToppleInfo | null = null
 
   const session = new Session({
@@ -34,6 +35,9 @@ async function main(): Promise<void> {
     autoTimer: false,
     onShot: (o) => {
       lastShot = o
+    },
+    onHit: (cupId) => {
+      lastHitId = cupId
     },
     onTopple: (info) => {
       lastTopple = info
@@ -67,7 +71,6 @@ async function main(): Promise<void> {
   bind('btn-free', () => local.emitBarrage('观众'))
   bind('btn-gift1', () => local.emitGift('rose'))
   bind('btn-gift2', () => local.emitGift('heart'))
-  bind('btn-rainbow', () => local.emitGift('rocket'))
 
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return
@@ -90,6 +93,7 @@ async function main(): Promise<void> {
         timeLeftMs: session.timeLeftMs,
         durationMs: session.durationMsValue,
         lastShot,
+        lastHitId,
         lastTopple,
         summary: session.summary,
         loopCountdownMs: session.loopCountdownMs,
@@ -99,6 +103,7 @@ async function main(): Promise<void> {
       Math.min(100, ticker.deltaMS),
     )
     lastShot = null // 特效与大字只触发一次
+    lastHitId = null
     lastTopple = null
   })
 }

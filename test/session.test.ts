@@ -11,24 +11,25 @@ function run(s: Session, totalMs: number, stepMs = 16): void {
 }
 
 describe('Session（火力压制 + 多米诺）', () => {
-  it('一局：开始 → 弹幕命中后杯子被推动', () => {
+  it('一局：开始 → 小豆直线上升，打到前排杯', () => {
     const src = new LocalTriggerSource()
-    let last: ShotOutcome | null = null
+    let hitId: number | null = null
     const s = new Session({
       tower: SMALL,
       durationMs: 20_000,
       source: src,
       autoTimer: false,
-      onShot: (o) => {
-        last = o
+      onHit: (id) => {
+        hitId = id
       },
     })
     s.start()
     src.emitBarrage('观众A')
-    expect(last!.contacted).toBe(true)
     run(s, 400)
-    const target = s.cups.find((c) => c.id === last!.targetId)!
-    expect(target.state === 'leaning' || target.state === 'toppled').toBe(true)
+    expect(hitId).not.toBeNull()
+    const cup = s.cups.find((c) => c.id === hitId)!
+    expect(cup.hitCount).toBe(1)
+    expect(Math.abs(cup.tilt)).toBeGreaterThan(0)
   })
 
   it('长按连发（80ms 一发）能打翻并触发同列倒塌', () => {

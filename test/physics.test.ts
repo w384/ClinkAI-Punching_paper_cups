@@ -164,7 +164,7 @@ describe('结构塌落（与击倒规则解耦）', () => {
     expect(stillAlive.every((c) => c.pendingMs === 0)).toBe(true)
   })
 
-  it('只有支撑全没了才会塌，塌的范围不超过"上方楔形"', () => {
+  it('塌落范围：缺口逐层变宽，但整圈不会全没', () => {
     const tower: TowerConfig = { ...SMALL, rows: 6, ringCount: 20 }
     const built = buildTower(tower)
     const w = worldOf(built)
@@ -175,10 +175,15 @@ describe('结构塌落（与击倒规则解耦）', () => {
       relaxStructure(w)
     }
     const down = (layer: number) =>
-      built.byGroupLayer.get(`${GROUP_INNER}:${layer}`)!.filter((c) => c.state !== 'standing')
-    const counts = Array.from({ length: tower.rows }, (_, l) => down(l).length)
-    for (let l = 0; l < counts.length; l++) expect(counts[l]).toBeLessThan(tower.ringCount)
-    expect(counts[tower.rows - 1]).toBeLessThan(tower.ringCount / 2)
+      built.byGroupLayer
+        .get(`${GROUP_INNER}:${layer}`)!
+        .filter((c) => c.state === 'toppled' || c.state === 'fallen').length
+    const counts = Array.from({ length: tower.rows }, (_, l) => down(l))
+    // 纸杯之间没有粘接：缺 3 只底杯，上方丢支撑的洞必然逐层变宽（不是收窄）
+    for (let l = 1; l < counts.length; l++) expect(counts[l]).toBeGreaterThanOrEqual(counts[l - 1])
+    // 但任何一层都不能被整圈清空
+    for (const n of counts) expect(n).toBeLessThan(tower.ringCount)
+    expect(counts[tower.rows - 1]).toBeLessThan(tower.ringCount - 1)
   })
 
   it('只剩一只支撑 = 悬挑 → 撑不住（倒三角判据）', () => {
@@ -202,23 +207,100 @@ describe('结构塌落（与击倒规则解耦）', () => {
     expect(new Set(pendings).size).toBeGreaterThan(1)
   })
 
-  it('弹体抛物线：有重力、最终销毁', () => {
+  it('弹体直线上升，出屏即销毁（无重力、无横向速度）', () => {
     const p: Projectile = {
       id: 0,
       x: 640,
       y: 640,
-      vx: 100,
-      vy: -420,
+      vx: 0,
+      vy: -900,
       age: 0,
-      targetId: 0,
       impulse: 500,
       increments: 1,
       spread: 'point',
+      alpha: 1,
       dead: false,
     }
-    stepProjectile(p, 16, CFG)
-    expect(p.vy).toBeGreaterThan(-420)
-    for (let i = 0; i < 200 && !p.dead; i++) stepProjectile(p, 16, CFG)
+    stepProjectile(p, 16)
+    expect(p.vy).toBe(-900)
+    expect(p.x).toBe(640)
+    for (let i = 0; i < 90 && !p.dead; i++) stepProjectile(p, 16)
     expect(p.dead).toBe(true)
+  })
+
+  it('穿过空档后越过杯塔顶部就彻底消失，不会一路飞到画面顶端', () => {
+    const fadeTopY = 200
+    const p: Projectile = {
+      id: 1,
+      x: 640,
+      y: fadeTopY,
+      vx: 0,
+      vy: -900,
+      age: 0,
+      impulse: 500,
+      increments: 1,
+      spread: 'point',
+      alpha: 1,
+      dead: false,
+    }
+    let prev = p.alpha
+    let frames = 0
+    while (!p.dead && frames < 200) {
+      stepProjectile(p, 16, fadeTopY)
+      expect(p.alpha).toBeLessThanOrEqual(prev + 1e-9)
+      prev = p.alpha
+      frames++
+    }
+    expect(p.dead).toBe(true)
+    expect(p.alpha).toBe(0)
+    // 只往上走约 40px 就没了，而不是继续飞到 y=0
+    expect(frames).toBeLessThan(6)
+    expect(p.y).toBeGreaterThan(fadeTopY - 60)
+  })
+})
+
+describe('倒向：往缺口倒，不随机左右', () => {
+  it('两侧都活着时保持默认方向', () => {
+    const built = buildTower(SMALL)
+    const w = worldOf(built)
+    const ring = built.byGroupLayer.get(`${GROUP_INNER}:2`)!
+    const cup = ring[4]
+    const before = cup.dir
+    topple(cup, w)
+    expect(cup.dir).toBe(before)
+  })
+
+  it('左边有缺口就往左倒，右边有缺口就往右倒', () => {
+    const built = buildTower(SMALL)
+    const w = worldOf(built)
+    const ring = built.byGroupLayer.get(`${GROUP_INNER}:2`)!
+    ring[2].state = 'fallen'
+    ring[3].state = 'fallen'
+    const leftGapCup = ring[4]
+    topple(leftGapCup, w)
+    expect(leftGapCup.dir).toBe(-1)
+
+    const built2 = buildTower(SMALL)
+    const w2 = worldOf(built2)
+    const ring2 = built2.byGroupLayer.get(`${GROUP_INNER}:2`)!
+    ring2[5].state = 'fallen'
+    ring2[6].state = 'fallen'
+    const rightGapCup = ring2[4]
+    topple(rightGapCup, w2)
+    expect(rightGapCup.dir).toBe(1)
+  })
+
+  it('同层倒下的杯子不会都朝同一边（各自找自己的缺口）', () => {
+    const built = buildTower(SMALL)
+    const w = worldOf(built)
+    const ring = built.byGroupLayer.get(`${GROUP_INNER}:2`)!
+    // 只在中间留一个缺口，左右两侧的杯子应该分别向左/右倒（V 形张开）
+    ring[0].state = 'fallen'
+    const rightOfGap = ring[1] // 缺口在它的顺时针侧
+    const leftOfGap = ring[ring.length - 1] // 缺口在它的另一侧
+    topple(rightOfGap, w)
+    topple(leftOfGap, w)
+    expect(rightOfGap.dir).toBe(-1)
+    expect(leftOfGap.dir).toBe(1)
   })
 })

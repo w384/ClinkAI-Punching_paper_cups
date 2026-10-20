@@ -8,10 +8,10 @@ import type {
   TriggerEvent,
   TriggerSource,
 } from '../engine/types'
-import { pickTarget, projectileHitSwept, Scoreboard, spawnProjectile } from '../engine/rule'
+import { firstCupOnPath, Scoreboard, spawnProjectile } from '../engine/rule'
 import { applyHit, DEFAULT_PHYSICS, relaxStructure, stepCup, stepProjectile, type PhysicsConfig, type World } from '../engine/physics'
 import { eventToShot } from '../engine/trigger'
-import { buildTower, PAPER_TOWER, type TowerConfig } from '../engine/tower'
+import { buildTower, PAPER_TOWER, VIEW, type TowerConfig } from '../engine/tower'
 import type { ThemePack } from '../engine/theme'
 import { paperCupTheme } from '../engine/theme'
 
@@ -29,6 +29,8 @@ export interface SessionOptions {
   onTick?: (dtMs: number) => void
   onPhase?: (phase: SessionPhase) => void
   onShot?: (outcome: ShotOutcome) => void
+  /** 小豆打到（或打空）时回调；cupId 为 null 表示这一发没碰到任何杯子 */
+  onHit?: (cupId: number | null) => void
   onTopple?: (info: ToppleInfo) => void
 }
 
@@ -51,6 +53,8 @@ export class Session {
   private byGroupLayer = new Map<string, Cup[]>()
   private toppledThisFrame = 0
   private readonly world: World
+  /** 杯塔顶部：小豆越过这里就开始淡出，不再一路飞到画面顶端 */
+  private readonly fadeTopY: number
   private readonly durationMs: number
   private readonly theme: ThemePack
   private readonly autoTimer: boolean
@@ -67,6 +71,7 @@ export class Session {
     this.theme = opts.theme ?? paperCupTheme
     this.autoTimer = opts.autoTimer ?? true
     this.timeLeftMs = this.durationMs
+    this.fadeTopY = VIEW.baseY - this.tower.rows * this.tower.layerH - 30
     this.rebuildTower()
 
     this.world = {
@@ -124,15 +129,10 @@ export class Session {
     if (!shot) return
 
     this.scoreboard.fire()
-    const target = pickTarget(this.cups, this.towerAngle)
-    if (!target) {
-      this.opts.onShot?.({ targetId: null, contacted: false, missed: true, impulse: 0 })
-      return
-    }
-
-    const proj = spawnProjectile(this.projectileSeq++, target, this.towerAngle, this.tower, shot)
+    // 不选目标：小豆直线上升，打到谁由碰撞决定
+    const proj = spawnProjectile(this.projectileSeq++, shot)
     this.projectiles.push(proj)
-    this.opts.onShot?.({ targetId: target.id, contacted: true, missed: false, impulse: proj.impulse })
+    this.opts.onShot?.({ targetId: null, contacted: false, missed: false, impulse: proj.impulse })
   }
 
   advance(dtMs: number): void {
@@ -143,21 +143,18 @@ export class Session {
     // 否则打掉底层后上方要等到下一次别的原因产生翻倒才开始塌。
     this.toppledThisFrame = 0
 
-    // 弹体飞行 + 扫掠命中判定（不依赖步长，避免高速弹体穿模）
+    // 小豆直线上升：与所有存活杯做"本帧线段 vs 圆"求交，取最先碰到的那只
     const alive: Projectile[] = []
     for (const p of this.projectiles) {
       if (p.dead) continue
       const prevX = p.x
       const prevY = p.y
-      stepProjectile(p, dtMs, this.physics)
-      if (p.dead) continue
+      stepProjectile(p, dtMs, this.fadeTopY)
 
-      const target = this.byId.get(p.targetId)
-      if (!target || target.state === 'fallen' || target.state === 'toppled') continue
-
-      if (projectileHitSwept(p, prevX, prevY, target, this.towerAngle, this.tower)) {
+      const hit = firstCupOnPath(prevX, prevY, p.x, p.y, this.cups, this.towerAngle, this.tower)
+      if (hit) {
         if (p.spread === 'ring') {
-          // 彩虹清杯：打整圈最底层，每只杯叠加 1 次随机倾角
+          // 彩虹清杯：撞到任何杯子后，清整圈最底层
           let bottom = Number.POSITIVE_INFINITY
           for (const c of this.cups) {
             if (c.state === 'standing' || c.state === 'leaning') bottom = Math.min(bottom, c.layer)
@@ -169,9 +166,17 @@ export class Session {
             applyHit(c, this.physics.minHitsToTopple, this.world)
           }
         } else {
-          applyHit(target, p.increments, this.world)
+          applyHit(hit.cup, p.increments, this.world)
         }
-        continue // 命中后弹体消失
+        p.dead = true
+        this.opts.onHit?.(hit.cup.id)
+        continue
+      }
+
+      if (p.dead) {
+        // 飞出画面都没碰到杯子 = 空击
+        this.opts.onHit?.(null)
+        continue
       }
       alive.push(p)
     }
@@ -183,7 +188,7 @@ export class Session {
 
     this.opts.onTick?.(dtMs)
 
-    // 结束条件：全部击倒（清杯）或到时间上限（默认 10 分钟）
+    // 结束条件：全部击倒（清杯）或到时间上限（默认 3 分钟）
     const cleared = this.cups.length > 0 && this.cups.every((c) => c.state === 'fallen')
     if (cleared || this.timeLeftMs <= 0) this.settle()
   }

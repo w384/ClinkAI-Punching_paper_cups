@@ -18,7 +18,6 @@ export const DEFAULT_KEYMAP: KeyBinding[] = [
   { key: ' ', event: { type: 'barrage', payload: { name: '键盘·观众' } }, hint: '空格 免费击发（可长按）', repeatMs: 80 },
   { key: 'j', event: { type: 'gift', payload: { name: 'rose', amount: 1 } }, hint: 'J 礼物·多发一发（可长按）', repeatMs: 180 },
   { key: 'k', event: { type: 'gift', payload: { name: 'heart', amount: 1 } }, hint: 'K 礼物·双发（可长按）', repeatMs: 260 },
-  { key: 'l', event: { type: 'gift', payload: { name: 'rocket', amount: 1 } }, hint: 'L 礼物·彩虹清杯（长按慢速）', repeatMs: 1200 },
 ]
 
 /**

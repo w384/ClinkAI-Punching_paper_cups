@@ -44,7 +44,7 @@ describe('KeyboardTriggerSource', () => {
     vi.useRealTimers()
   })
 
-  it('空格 → 弹幕事件，J/K/L → 对应礼物事件', () => {
+  it('空格 → 弹幕事件，J/K → 对应礼物事件；L 已移除', () => {
     const target = new FakeTarget()
     const kb = new KeyboardTriggerSource(undefined, target as unknown as EventTarget)
     const got: TriggerEvent[] = []
@@ -55,10 +55,9 @@ describe('KeyboardTriggerSource', () => {
       target.release(k)
     }
 
-    expect(got.map((e) => e.type)).toEqual(['barrage', 'gift', 'gift', 'gift'])
+    expect(got.map((e) => e.type)).toEqual(['barrage', 'gift', 'gift'])
     expect(got[1].payload.name).toBe('rose')
     expect(got[2].payload.name).toBe('heart')
-    expect(got[3].payload.name).toBe('rocket')
   })
 
   it('大写与未知键处理正确', () => {
@@ -198,11 +197,11 @@ describe('CompositeTriggerSource', () => {
     merged.subscribe(cb)
 
     local.emitGift('heart')
-    target.press('l')
-    target.release('l')
+    target.press('j')
+    target.release('j')
 
     expect(cb).toHaveBeenCalledTimes(2)
-    expect((cb.mock.calls[1][0] as TriggerEvent).payload.name).toBe('rocket')
+    expect((cb.mock.calls[1][0] as TriggerEvent).payload.name).toBe('rose')
   })
 
   it('取消订阅后全部失效', () => {

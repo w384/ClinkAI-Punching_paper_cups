@@ -41,7 +41,7 @@ export interface Cup {
   dir: number
 }
 
-/** 投射物：抛物线弹体，碰撞时向纸杯输出冲量 */
+/** 投射物：从固定击发点垂直上升的直线小豆，碰到谁就叠谁的倾角 */
 export interface Projectile {
   id: number
   x: number
@@ -49,14 +49,14 @@ export interface Projectile {
   vx: number
   vy: number
   age: number
-  /** 瞄准的杯子 */
-  targetId: number
   /** 冲量（质量 × 速度，仅用于 HUD/调试展示） */
   impulse: number
   /** 命中时叠加几次随机倾角（礼物加量） */
   increments: number
   /** 作用范围 */
   spread: 'point' | 'ring'
+  /** 不透明度：飞出杯塔范围后逐渐淡出 */
+  alpha: number
   dead: boolean
 }
 

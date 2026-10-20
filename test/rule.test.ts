@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { pickTarget, projectileHit, Scoreboard, SHOT_PROFILE, spawnProjectile } from '../src/engine/rule'
-import { buildTower, GROUP_INNER, HIT_POINT, MUZZLE, PAPER_TOWER, project } from '../src/engine/tower'
+import { BEAN_SPEED, firstCupOnPath, Scoreboard, SHOT_PROFILE, spawnProjectile } from '../src/engine/rule'
+import { stepProjectile } from '../src/engine/physics'
+import { buildTower, GROUP_INNER, HIT_POINT, MUZZLE, PAPER_TOWER, project, VIEW } from '../src/engine/tower'
 import type { Cup, ShotSpec } from '../src/engine/types'
 
 function barrageShot(): ShotSpec {
@@ -8,39 +9,61 @@ function barrageShot(): ShotSpec {
   return { kind: 'free', effect: 'free', power: 1, label: '弹幕', mass: p.mass, speed: p.speed, spread: 'point' }
 }
 
-describe('rule（击发与计分）', () => {
-  it('固定击发点只打最底层、当前转到正前方的杯子', () => {
-    const cups = buildTower(PAPER_TOWER).cups
-    const target = pickTarget(cups, 0)!
-    const minLayer = Math.min(...cups.map((c) => c.layer))
-    expect(target.layer).toBe(minLayer)
-    const dist = Math.abs(Math.sin(target.angle) * target.radius)
-    const minDist = Math.min(
-      ...cups.filter((c) => c.layer === minLayer).map((c) => Math.abs(Math.sin(c.angle) * c.radius)),
-    )
-    expect(dist).toBeLessThanOrEqual(minDist + 1)
+/** 只留一层底圈，方便验证"前排空了打后排" */
+const ONE_LAYER = { ...PAPER_TOWER, rows: 1 }
+
+describe('rule（直线小豆与计分）', () => {
+  it('小豆是直线：无横向速度、无重力，匀速上升', () => {
+    const p = spawnProjectile(1, barrageShot())
+    expect(p.x).toBe(MUZZLE.x)
+    expect(p.y).toBe(MUZZLE.y)
+    expect(p.vx).toBe(0)
+    expect(p.vy).toBe(-BEAN_SPEED)
+    const vy0 = p.vy
+    stepProjectile(p, 16)
+    stepProjectile(p, 16)
+    expect(p.vy).toBe(vy0) // 直线：速度不变（没有重力加速度）
+    expect(p.x).toBe(MUZZLE.x)
+    expect(p.y).toBeLessThan(MUZZLE.y)
   })
 
-  it('弹体走抛物线，约 170ms 后命中目标杯', () => {
+  it('直线命中前排：先碰到最靠前（depth 最大）的那只杯', () => {
     const cups = buildTower(PAPER_TOWER).cups
-    const target = pickTarget(cups, 0)!
-    const p = spawnProjectile(1, target, 0, PAPER_TOWER, barrageShot())
-    expect(p.x).toBe(MUZZLE.x)
-    expect(p.vy).toBeLessThan(0)
-    const g = 2200
-    let hitAt = -1
-    for (let ms = 0; ms < 600; ms += 4) {
-      p.vy += g * 0.004
-      p.x += p.vx * 0.004
-      p.y += p.vy * 0.004
-      p.age += 4
-      if (projectileHit(p, target, 0, PAPER_TOWER)) {
-        hitAt = ms
-        break
-      }
+    // 从击发点向上扫过底圈高度
+    const hit = firstCupOnPath(MUZZLE.x, MUZZLE.y, MUZZLE.x, HIT_POINT.y - 60, cups, 0, PAPER_TOWER)
+    expect(hit).not.toBeNull()
+    expect(hit!.cup.layer).toBe(0)
+    const p = project(hit!.cup, 0, PAPER_TOWER)
+    expect(Math.abs(p.x - HIT_POINT.x)).toBeLessThan(20)
+    expect(p.depth).toBeGreaterThan(0) // 前排
+  })
+
+  it('前排没有杯子时继续往后走，打到后排', () => {
+    const built = buildTower(ONE_LAYER)
+    const cups = built.cups
+    // 把正前方那一列（|x - 击发点| 很小）的杯子全部拿掉
+    for (const c of cups) {
+      const p = project(c, 0, ONE_LAYER)
+      if (Math.abs(p.x - MUZZLE.x) < 20 && p.depth > 0) c.state = 'fallen'
     }
-    expect(hitAt).toBeGreaterThan(80)
-    expect(hitAt).toBeLessThan(400)
+    const hit = firstCupOnPath(MUZZLE.x, MUZZLE.y, MUZZLE.x, HIT_POINT.y - 90, cups, 0, ONE_LAYER, 20)
+    expect(hit).not.toBeNull()
+    const p = project(hit!.cup, 0, ONE_LAYER)
+    expect(p.depth).toBeLessThan(0) // 打到后排了
+  })
+
+  it('前后都没有杯子 → 空击（返回 null）', () => {
+    const built = buildTower(ONE_LAYER)
+    for (const c of built.cups) c.state = 'fallen'
+    const hit = firstCupOnPath(MUZZLE.x, MUZZLE.y, MUZZLE.x, HIT_POINT.y - 90, built.cups, 0, ONE_LAYER, 20)
+    expect(hit).toBeNull()
+  })
+
+  it('弹体飞出画面即销毁（空击不残留）', () => {
+    const p = spawnProjectile(1, barrageShot())
+    for (let i = 0; i < 200 && !p.dead; i++) stepProjectile(p, 16)
+    expect(p.dead).toBe(true)
+    expect(p.y).toBeLessThan(0)
   })
 
   it('炮灰档案：礼物冲量 > 弹幕，火箭最大', () => {
@@ -79,13 +102,10 @@ describe('rule（击发与计分）', () => {
     expect(last.isHighlight).toBe(true)
   })
 
-  it('炮口在画面下方、瞄准点是底部正前方', () => {
-    const cups = buildTower(PAPER_TOWER).cups
-    const target = pickTarget(cups, 0)!
-    const p = project(target, 0, PAPER_TOWER)
-    expect(Math.abs(p.x - HIT_POINT.x)).toBeLessThan(8)
-    expect(MUZZLE.y).toBeGreaterThan(HIT_POINT.y)
+  it('炮口在画面下方、击发点固定在底部正前方', () => {
     expect(MUZZLE.x).toBe(HIT_POINT.x)
+    expect(MUZZLE.y).toBeGreaterThan(HIT_POINT.y)
+    expect(VIEW.cx).toBe(HIT_POINT.x)
   })
 
   it('塔规模：内圈 12 层 × 27 只，没有外圈', () => {

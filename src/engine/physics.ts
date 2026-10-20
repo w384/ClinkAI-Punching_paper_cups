@@ -22,8 +22,6 @@ export interface PhysicsConfig {
   fallDurationMs: number
   /** 倒定后停留多久再消失（ms） */
   settleHoldMs: number
-  /** 投射物重力（px/s²，屏幕向下为正） */
-  projGravity: number
   /** 环向完整性阈值（默认关闭 = 1） */
   hoopIntegrity: number
   /** 结构失效后排队倾倒的基础延时（ms）——错峰才有多米诺感 */
@@ -41,7 +39,6 @@ export const DEFAULT_PHYSICS: PhysicsConfig = {
   chainTiltAdd: 0.02,
   fallDurationMs: 780,
   settleHoldMs: 320,
-  projGravity: 2200,
   hoopIntegrity: 1,
   staggerBaseMs: 110,
   staggerJitterMs: 170,
@@ -98,6 +95,37 @@ export function applyHit(cup: Cup, increments: number, world: World, rand: () =>
   return added
 }
 
+/**
+ * 倒向哪边：缺口方向。
+ *
+ * 同层里沿环向左右扫描，看哪一侧离"第一个已经不在了的杯子"更近——
+ * 杯子就往那一侧倒（缺口会像 V 形一样向两边张开），而不是随机左右摆。
+ * 两侧一样近（整圈还很完整 / 整圈都塌了）才退回建塔时给的默认方向。
+ */
+export function gapDir(cup: Cup, world: World): number {
+  const ring = world.byGroupLayer.get(`${cup.group}:${cup.layer}`)
+  if (!ring || ring.length < 3) return cup.dir || 1
+  const n = ring.length
+  const present = (c: Cup) => c.state !== 'fallen' && c.state !== 'toppled'
+
+  let right = n
+  let left = n
+  for (let k = 1; k < n; k++) {
+    if (!present(ring[(cup.index + k) % n])) {
+      right = k
+      break
+    }
+  }
+  for (let k = 1; k < n; k++) {
+    if (!present(ring[(cup.index - k + n) % n])) {
+      left = k
+      break
+    }
+  }
+  if (right === left) return cup.dir || 1
+  return right < left ? 1 : -1
+}
+
 export function topple(cup: Cup, world: World): void {
   if (cup.state === 'toppled' || cup.state === 'fallen') return
   cup.state = 'toppled'
@@ -105,7 +133,9 @@ export function topple(cup: Cup, world: World): void {
   // 从当前倾角接着倒：否则动画会从 0 重新起算，视觉上"弹回直立再倒一次"
   cup.fallFrom = cup.tilt
   cup.pendingMs = 0
-  if (cup.dir === 0) cup.dir = cup.tilt >= 0 ? 1 : -1
+  // 倒向缺口，不随机左右
+  cup.dir = gapDir(cup, world)
+  cup.tilt = cup.dir * Math.min(cup.tiltSum, world.cfg.tiltVisualCap)
   world.onTopple?.(cup)
 
   // 横向多米诺（很弱）：只给倾倒方向那一侧的邻居加一点倾角，不会触发翻倒判定
@@ -205,13 +235,29 @@ export function stepCup(cup: Cup, dtMs: number, world: World): void {
   syncTilt(cup, world.cfg)
 }
 
-export function stepProjectile(p: Projectile, dtMs: number, cfg: PhysicsConfig): void {
+/** 越过杯塔顶部后继续飞行的淡出距离（px）——很短，出了盘区就彻底没了 */
+export const BEAN_FADE_PX = 40
+
+/**
+ * 直线弹体：匀速向上飞。
+ * 空击时它会穿过杯墙中间的洞继续上升，但**越出杯塔/圆盘范围就结束**：
+ * 从 `fadeTopY`（杯塔顶部）再往上走 BEAN_FADE_PX 就完全消失，不会一路飞到画面顶端。
+ */
+export function stepProjectile(p: Projectile, dtMs: number, fadeTopY = Number.NEGATIVE_INFINITY): void {
   const dt = dtMs / 1000
   p.age += dtMs
-  p.vy += cfg.projGravity * dt
   p.x += p.vx * dt
   p.y += p.vy * dt
-  if (p.age > 2600 || p.y > 900) p.dead = true
+
+  if (fadeTopY > 0 && p.y < fadeTopY) {
+    p.alpha = Math.max(0, (p.y - (fadeTopY - BEAN_FADE_PX)) / BEAN_FADE_PX)
+    if (p.alpha <= 0) {
+      p.dead = true
+      p.alpha = 0
+      return
+    }
+  }
+  if (p.y < -80 || p.age > 4000) p.dead = true
 }
 
 /** 倒地后的渐隐时长（ms） */
