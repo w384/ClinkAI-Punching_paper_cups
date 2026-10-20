@@ -1,0 +1,4 @@
+# esbuild 平台二进制已由 @esbuild/win32-x64 预置在 store 中并验证可用；
+# postinstall 仅做校验，且本环境子进程 spawn 受限，故显式拒绝运行构建脚本。
+allowBuilds:
+  esbuild: false

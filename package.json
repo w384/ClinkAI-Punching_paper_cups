@@ -1,0 +1,23 @@
+{
+  "name": "cupsplash",
+  "private": true,
+  "version": "0.1.0",
+  "description": "打纸杯直播互动小玩法（抖音小玩法渠道，M1 本地模拟版）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:single": "node scripts/build-single.mjs",
+    "serve": "node scripts/serve.mjs dist 4173",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pixi.js": "^8.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
+  }
+}
