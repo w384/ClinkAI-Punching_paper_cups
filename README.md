@@ -6,6 +6,8 @@
 > 当前阶段：**M1 本地模拟版（可玩、可录 demo）**。平台接入（M2）与软著/审核（M3）尚未开始。
 > 合规边界见 [docs/compliance.md](docs/compliance.md)，**任何迭代都不得突破**。
 
+**在线试玩**：<http://106.53.200.115/>（nginx 静态托管，手机/PC 直接打开，部署细节见 [docs/deploy.md](docs/deploy.md)）
+
 ## 快速开始
 
 ```bash
