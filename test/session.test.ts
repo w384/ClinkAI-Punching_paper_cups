@@ -4,7 +4,7 @@ import { PAPER_TOWER, type TowerConfig } from '../src/engine/tower'
 import type { ShotOutcome } from '../src/engine/types'
 import { Session } from '../src/game/session'
 
-const SMALL: TowerConfig = { ...PAPER_TOWER, rows: 6, ringCount: 10, outerLayers: 2, outerCount: 12 }
+const SMALL: TowerConfig = { ...PAPER_TOWER, rows: 6, ringCount: 10 }
 
 function run(s: Session, totalMs: number, stepMs = 16): void {
   for (let t = 0; t < totalMs; t += stepMs) s.advance(stepMs)
@@ -52,7 +52,7 @@ describe('Session（火力压制 + 多米诺）', () => {
     expect(s.cups.some((c) => Math.abs(c.tilt) > 0.001 || c.pendingMs > 0)).toBe(true)
   })
 
-  it('单发弹幕打不翻（只有持续火力累积过临界）', () => {
+  it('单发弹幕打不倒（需要累积到 10 次）', () => {
     const src = new LocalTriggerSource()
     const s = new Session({ tower: SMALL, durationMs: 60_000, source: src, autoTimer: false })
     s.start()
@@ -61,13 +61,23 @@ describe('Session（火力压制 + 多米诺）', () => {
     expect(s.summary.totalHits).toBe(0)
   })
 
-  it('一记爱心单发就能打翻', () => {
+  it('爱心 = 双倍叠加：5 次命中即可倒（2 次/发）', () => {
     const src = new LocalTriggerSource()
-    const s = new Session({ tower: SMALL, durationMs: 60_000, source: src, autoTimer: false })
+    let hits = 0
+    const s = new Session({
+      tower: SMALL,
+      durationMs: 60_000,
+      source: src,
+      autoTimer: false,
+    })
     s.start()
-    src.emitGift('heart')
-    run(s, 2000)
-    expect(s.summary.totalHits).toBeGreaterThan(0)
+    for (let i = 0; i < 5; i++) {
+      src.emitGift('heart')
+      run(s, 150) // 5 发 × 2 次 = 10 次，且在 1.16s 停留窗口内
+    }
+    run(s, 1500)
+    hits = s.cups.filter((c) => c.state === 'toppled' || c.state === 'fallen').length
+    expect(hits).toBeGreaterThan(0)
   })
 
   it('火箭彩虹清杯：整圈底层被打掉 → 大面积塌落', () => {
@@ -94,7 +104,20 @@ describe('Session（火力压制 + 多米诺）', () => {
     expect(s.summary.totalShots).toBe(0)
   })
 
-  it('时间到结算', () => {
+  it('默认时长 3 分钟上限', () => {
+    const s = new Session({ tower: SMALL, autoTimer: false })
+    expect(s.durationMsValue).toBe(180_000)
+  })
+
+  it('全部击倒 → 立即结算（不重开新塔）', () => {
+    const s = new Session({ tower: SMALL, durationMs: 600_000, autoTimer: false })
+    s.start()
+    for (const c of s.cups) c.state = 'fallen'
+    s.advance(16)
+    expect(s.phase).toBe('settled')
+  })
+
+  it('时间到才结算（未清杯）', () => {
     const s = new Session({ tower: SMALL, durationMs: 800, autoTimer: false })
     s.start()
     s.advance(800)

@@ -9,7 +9,7 @@ import type {
   TriggerSource,
 } from '../engine/types'
 import { pickTarget, projectileHitSwept, Scoreboard, spawnProjectile } from '../engine/rule'
-import { applyImpulse, DEFAULT_PHYSICS, relaxStructure, stepCup, stepProjectile, type PhysicsConfig, type World } from '../engine/physics'
+import { applyHit, DEFAULT_PHYSICS, relaxStructure, stepCup, stepProjectile, type PhysicsConfig, type World } from '../engine/physics'
 import { eventToShot } from '../engine/trigger'
 import { buildTower, PAPER_TOWER, type TowerConfig } from '../engine/tower'
 import type { ThemePack } from '../engine/theme'
@@ -24,6 +24,8 @@ export interface SessionOptions {
   autoTimer?: boolean
   /** 结算后自动开下一局的倒计时（ms，0 = 关闭） */
   autoLoopMs?: number
+  /** 随机源（默认 Math.random；测试注入确定性序列） */
+  rand?: () => number
   onTick?: (dtMs: number) => void
   onPhase?: (phase: SessionPhase) => void
   onShot?: (outcome: ShotOutcome) => void
@@ -32,7 +34,7 @@ export interface SessionOptions {
 
 /**
  * 局内状态机：idle → running → settled
- * 一局 = 一段火力压制：弹体打底部 → 冲量累积 → 倾角超过阈值 → 翻倒 → 连锁
+ * 一局 = 一段火力压制：弹体打底部 → 每次命中叠加一次随机倾角 → 满 10 次或超阈值 → 翻倒 → 结构连锁
  */
 export class Session {
   phase: SessionPhase = 'idle'
@@ -61,7 +63,7 @@ export class Session {
   constructor(private readonly opts: SessionOptions = {}) {
     this.tower = opts.tower ?? PAPER_TOWER
     this.physics = opts.physics ?? DEFAULT_PHYSICS
-    this.durationMs = opts.durationMs ?? 45_000
+    this.durationMs = opts.durationMs ?? 3 * 60_000
     this.theme = opts.theme ?? paperCupTheme
     this.autoTimer = opts.autoTimer ?? true
     this.timeLeftMs = this.durationMs
@@ -72,6 +74,7 @@ export class Session {
       byId: this.byId,
       byGroupLayer: this.byGroupLayer,
       cfg: this.physics,
+      rand: opts.rand ?? Math.random,
       onTopple: (cup) => {
         this.toppledThisFrame++
         const info = this.scoreboard.topple()
@@ -136,6 +139,9 @@ export class Session {
     if (this.phase !== 'running') return
     this.timeLeftMs = Math.max(0, this.timeLeftMs - dtMs)
     this.towerAngle += (this.tower.rotationSpeed * dtMs) / 1000
+    // 必须在"命中结算"之前清零：命中造成的翻倒也要触发同一帧的结构重算，
+    // 否则打掉底层后上方要等到下一次别的原因产生翻倒才开始塌。
+    this.toppledThisFrame = 0
 
     // 弹体飞行 + 扫掠命中判定（不依赖步长，避免高速弹体穿模）
     const alive: Projectile[] = []
@@ -151,7 +157,7 @@ export class Session {
 
       if (projectileHitSwept(p, prevX, prevY, target, this.towerAngle, this.tower)) {
         if (p.spread === 'ring') {
-          // 彩虹清杯：打整圈最底层，随后整面墙失去支撑
+          // 彩虹清杯：打整圈最底层，每只杯叠加 1 次随机倾角
           let bottom = Number.POSITIVE_INFINITY
           for (const c of this.cups) {
             if (c.state === 'standing' || c.state === 'leaning') bottom = Math.min(bottom, c.layer)
@@ -159,10 +165,11 @@ export class Session {
           for (const c of this.cups) {
             if (c.layer !== bottom) continue
             if (c.state !== 'standing' && c.state !== 'leaning') continue
-            applyImpulse(c, p.impulse, 1, this.physics)
+            // 彩虹清杯 = 直接把底层每只杯叠满计数门 → 必倒
+            applyHit(c, this.physics.minHitsToTopple, this.world)
           }
         } else {
-          applyImpulse(target, p.impulse, 1, this.physics)
+          applyHit(target, p.increments, this.world)
         }
         continue // 命中后弹体消失
       }
@@ -171,15 +178,14 @@ export class Session {
     this.projectiles = alive
 
     // 杯子物理步进：先算单杯倾倒，再做承重路径检查（缺口太宽 → 上方成片塌）
-    this.toppledThisFrame = 0
     for (const cup of this.cups) stepCup(cup, dtMs, this.world)
     if (this.toppledThisFrame > 0) relaxStructure(this.world)
 
-    // 整面墙塌完 → 补一面新塔
-    if (this.cups.length > 0 && this.cups.every((c) => c.state === 'fallen')) this.rebuildTower()
-
     this.opts.onTick?.(dtMs)
-    if (this.timeLeftMs <= 0) this.settle()
+
+    // 结束条件：全部击倒（清杯）或到时间上限（默认 10 分钟）
+    const cleared = this.cups.length > 0 && this.cups.every((c) => c.state === 'fallen')
+    if (cleared || this.timeLeftMs <= 0) this.settle()
   }
 
   settle(): void {

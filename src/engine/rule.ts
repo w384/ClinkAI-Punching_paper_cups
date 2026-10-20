@@ -10,7 +10,11 @@ export const SHOT_PROFILE: Record<string, { mass: number; speed: number }> = {
   rainbow: { mass: 26, speed: 900 },
 }
 
-/** 固定击发点：打当前转到正前方的"最底层"杯子 */
+/**
+ * 固定击发点：打当前转到正前方的"最底层"杯子。
+ * 不锁定目标：连续火力能不能凑满 10 次，靠转盘转速保证
+ * （见 tower.ts 的 rotationSpeed 计算：一只杯在正前方停留约 1.2s）。
+ */
 export function pickTarget(cups: Cup[], worldAngle: number): Cup | null {
   let bottom = Number.POSITIVE_INFINITY
   for (const c of cups) {
@@ -24,6 +28,8 @@ export function pickTarget(cups: Cup[], worldAngle: number): Cup | null {
   for (const cup of cups) {
     if (cup.state === 'fallen' || cup.state === 'toppled') continue
     if (cup.layer !== bottom) continue
+    // 退化杯（半径 ≤ 0，比如误配的"外圈没给半径"）会被算成永远在正前方，直接排除
+    if (cup.radius <= 0) continue
     const theta = cup.angle + worldAngle
     const depth = Math.cos(theta)
     const dist = Math.abs(Math.sin(theta) * cup.radius)
@@ -61,6 +67,8 @@ export function spawnProjectile(
     age: 0,
     targetId: target.id,
     impulse: shot.mass * shot.speed,
+    // 礼物 = 加量器：power 决定一次命中叠加几次随机倾角；彩虹清杯对每只杯只叠 1 次
+    increments: shot.spread === 'ring' ? 1 : Math.max(1, Math.round(shot.power)),
     spread: shot.spread,
     dead: false,
   }

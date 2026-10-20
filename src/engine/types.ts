@@ -18,12 +18,12 @@ export interface Cup {
   layer: number
   /** 所属圈：0 = 内塔，1 = 外圈 */
   group: number
-  /** 质量（越小越容易被冲量推动） */
-  mass: number
-  /** 当前倾角（rad，带符号表示倾倒方向） */
+  /** 当前倾角（rad，带符号表示倾倒方向；= 累计值封顶后） */
   tilt: number
-  /** 角速度（rad/s） */
-  omega: number
+  /** 累计倾角（rad）：每次击中叠加一个随机值，不回正 */
+  tiltSum: number
+  /** 累计被击中次数 */
+  hitCount: number
   state: CupState
   /** 支撑它的下层杯 id（砖缝：压在两只杯的缝上） */
   supporters: number[]
@@ -51,8 +51,10 @@ export interface Projectile {
   age: number
   /** 瞄准的杯子 */
   targetId: number
-  /** 冲量（质量 × 速度） */
+  /** 冲量（质量 × 速度，仅用于 HUD/调试展示） */
   impulse: number
+  /** 命中时叠加几次随机倾角（礼物加量） */
+  increments: number
   /** 作用范围 */
   spread: 'point' | 'ring'
   dead: boolean

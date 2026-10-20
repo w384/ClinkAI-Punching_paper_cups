@@ -1,36 +1,30 @@
 import type { Cup, Projectile } from './types'
 
 /**
- * 物理参数（对应"可调参数"清单：质量、倾覆角阈值、初始对齐误差、
- * 投射物质量速度、连锁传递、环向完整性）。
+ * 物理参数（离散倾角累积模型）
+ *
+ * 手感规则：**每次击中从 3 个候选倾角里随机取一个，叠加到杯子上**；
+ * 累计击中次数达到 minHitsToTopple，或累计倾角超过 hitTiltThreshold，杯子就倒。
+ * 这两个条件都被调成"9 次以内无论怎么叠都到不了阈值"，所以**至少 10 次才可能倒**。
  */
 export interface PhysicsConfig {
-  /** 静摩擦临界角：倾角小于它时靠摩擦撑住 */
-  frictionAngle: number
-  /** 越过临界角后重力主导的倾覆加速度（rad/s²） */
-  toppleAccel: number
-  /** 静摩擦区角速度衰减 */
-  damping: number
-  /** 倾覆角阈值（rad）：倾角超过它就从"歪斜"转为"翻倒" */
-  toppleAngle: number
-  /** 静摩擦区倾角回正速率（1/s）：慢速单发打歪后会自动回正，只有连续火力才累积 */
-  tiltRelax: number
-  /** 冲量 → 角速度的换算系数 */
-  impulseScale: number
-  /** 翻倒动画时长（ms）：倒下过程，越长越"慢动作" */
+  /** 3 个候选倾角增量（rad），每次击中随机取一个 */
+  hitTiltValues: [number, number, number]
+  /** 累计倾角阈值：超过就倒（rad） */
+  hitTiltThreshold: number
+  /** 计数门：至少击中这么多次才可能倒 */
+  minHitsToTopple: number
+  /** 视觉倾角上限（rad）：累计再大也只显示到这个角度，避免"没倒却已经躺平" */
+  tiltVisualCap: number
+  /** 翻倒时传给同层邻居的横向倾角增量（rad）——很弱，只影响视觉，不会自己扩散 */
+  chainTiltAdd: number
+  /** 翻倒动画时长（ms） */
   fallDurationMs: number
-  /** 倒定后停留多久再消失（ms）：给眼睛一点确认时间 */
+  /** 倒定后停留多久再消失（ms） */
   settleHoldMs: number
   /** 投射物重力（px/s²，屏幕向下为正） */
   projGravity: number
-  /** 单只翻倒杯横向传给同层邻居的角速度（必须小于摩擦临界，不会自己扩散） */
-  chainSpin: number
-  /**
-   * 环向完整性阈值（默认关闭 = 1）。
-   * 曾经设 0.5 时，一层掉过半就直接把剩下半圈全推倒，但那不符合现实：
-   * 剩下的杯弧照样能立在台面上。现在统一走"每只杯只看自己的支撑"，
-   * 只有真要判整层时（比如整个环都失去支撑）才会一层层掉。
-   */
+  /** 环向完整性阈值（默认关闭 = 1） */
   hoopIntegrity: number
   /** 结构失效后排队倾倒的基础延时（ms）——错峰才有多米诺感 */
   staggerBaseMs: number
@@ -39,16 +33,15 @@ export interface PhysicsConfig {
 }
 
 export const DEFAULT_PHYSICS: PhysicsConfig = {
-  frictionAngle: 0.085,
-  toppleAccel: 7.5,
-  damping: 3.2,
-  toppleAngle: 0.34,
-  tiltRelax: 1.0,
-  impulseScale: 0.00031,
+  // 0.030 / 0.038 / 0.046；9 次全取最大值 = 0.414 < 阈值 0.42 → 9 次以内必不倒
+  hitTiltValues: [0.03, 0.038, 0.046],
+  hitTiltThreshold: 0.42,
+  minHitsToTopple: 10,
+  tiltVisualCap: 0.42,
+  chainTiltAdd: 0.02,
   fallDurationMs: 780,
   settleHoldMs: 320,
   projGravity: 2200,
-  chainSpin: 0.12,
   hoopIntegrity: 1,
   staggerBaseMs: 110,
   staggerJitterMs: 170,
@@ -60,25 +53,49 @@ export interface World {
   /** `${group}:${layer}` → 该圈该层（环向完整性判定用） */
   byGroupLayer: Map<string, Cup[]>
   cfg: PhysicsConfig
+  /** 随机源（测试里注入确定性实现） */
+  rand: () => number
   onTopple?: (cup: Cup) => void
 }
 
-function isAlive(cup: Cup): boolean {
+export function isAlive(cup: Cup): boolean {
   return cup.state === 'standing' || cup.state === 'leaning'
 }
 
-/** 冲量 → 角速度（质量越大越难推动） */
-export function applyImpulse(cup: Cup, impulse: number, dir: number, cfg: PhysicsConfig): void {
-  if (!isAlive(cup)) return
-  cup.omega += (impulse * cfg.impulseScale * dir) / Math.max(0.5, cup.mass)
-  if (cup.state === 'standing') cup.state = 'leaning'
+/** 视觉倾角 = 累计倾角（带方向），封顶在 tiltVisualCap */
+function syncTilt(cup: Cup, cfg: PhysicsConfig): void {
+  cup.tilt = cup.dir * Math.min(cup.tiltSum, cfg.tiltVisualCap)
 }
 
-/** 角冲量：直接叠加角速度（连锁传递用） */
-export function addSpin(cup: Cup, omega: number): void {
-  if (!isAlive(cup)) return
-  cup.omega += omega
-  if (cup.state === 'standing' && Math.abs(omega) > 0.05) cup.state = 'leaning'
+/** 从 3 个候选值里随机取一个 */
+export function pickTilt(cfg: PhysicsConfig, rand: () => number): number {
+  const i = Math.min(2, Math.max(0, Math.floor(rand() * 3)))
+  return cfg.hitTiltValues[i]
+}
+
+/**
+ * 一次命中：按 increments 次叠加随机倾角。
+ * 每叠一次都检查两个判定：计数门（至少 N 次）或 累计超阈值。
+ * 返回本次实际叠加的角度。
+ */
+export function applyHit(cup: Cup, increments: number, world: World, rand: () => number = world.rand): number {
+  if (!isAlive(cup)) return 0
+  let added = 0
+  const times = Math.max(1, Math.floor(increments))
+  for (let i = 0; i < times; i++) {
+    if (!isAlive(cup)) break
+    const v = pickTilt(world.cfg, rand)
+    cup.tiltSum += v
+    cup.hitCount++
+    added += v
+    if (cup.state === 'standing') cup.state = 'leaning'
+    if (cup.hitCount >= world.cfg.minHitsToTopple || cup.tiltSum >= world.cfg.hitTiltThreshold) {
+      topple(cup, world)
+      break
+    }
+  }
+  if (isAlive(cup)) syncTilt(cup, world.cfg)
+  return added
 }
 
 export function topple(cup: Cup, world: World): void {
@@ -88,11 +105,10 @@ export function topple(cup: Cup, world: World): void {
   // 从当前倾角接着倒：否则动画会从 0 重新起算，视觉上"弹回直立再倒一次"
   cup.fallFrom = cup.tilt
   cup.pendingMs = 0
-  cup.dir = cup.tilt >= 0 ? 1 : -1
+  if (cup.dir === 0) cup.dir = cup.tilt >= 0 ? 1 : -1
   world.onTopple?.(cup)
 
-  // 横向多米诺（弱）：只推倒向方向的那一只同层邻居；正上方那只是靠"失去支撑"掉，
-  // 不在这里硬推，否则会破坏"余料仍能承重"的判定顺序。
+  // 横向多米诺（很弱）：只给倾倒方向那一侧的邻居加一点倾角，不会触发翻倒判定
   const sameLayer = cup.neighbors.filter((id) => {
     const n = world.byId.get(id)
     return n && n.layer === cup.layer && n.group === cup.group
@@ -100,7 +116,11 @@ export function topple(cup: Cup, world: World): void {
   if (sameLayer.length > 0) {
     const target = cup.dir > 0 ? sameLayer[0] : sameLayer[sameLayer.length - 1]
     const n = world.byId.get(target)
-    if (n) addSpin(n, cup.dir * world.cfg.chainSpin)
+    if (n && isAlive(n)) {
+      n.tiltSum += world.cfg.chainTiltAdd
+      if (n.state === 'standing') n.state = 'leaning'
+      syncTilt(n, world.cfg)
+    }
   }
 }
 
@@ -114,10 +134,10 @@ function scheduleTopple(cup: Cup, world: World, keyPrefix: number): boolean {
 }
 
 /**
- * 承重路径检查（结定时调用）：
- * 1) 环向完整性：一圈缺弧超过阈值 → 剩下的弧自立不住 → 整层失效
- * 2) 支撑：每只杯只由"同列正下方"那一只支撑，支撑没了 → 失效
- * 3) 全部走"排队错峰"倾倒，所以视觉上是逐层传上去的多米诺，而不是同一帧齐倒
+ * 承重路径检查（结构判定，与"打多少下才倒"无关）：
+ * 1) 环向完整性（默认关闭）
+ * 2) 每只杯只由"两只支撑杯都活着"才站得住；丢一只 = 悬挑 = 坠
+ * 3) 全部走"排队错峰"，视觉上是逐层多米诺
  */
 export function relaxStructure(world: World): number {
   let scheduled = 0
@@ -130,7 +150,7 @@ export function relaxStructure(world: World): number {
     if (world.cfg.hoopIntegrity < 1) {
       for (const [key, ring] of world.byGroupLayer) {
         const layer = Number(key.split(':')[1])
-        if (layer === 0) continue // 最底层直接坐在转盘上
+        if (layer === 0) continue
         const alive = ring.filter(isAlive).length
         if (alive === 0 || alive / ring.length >= world.cfg.hoopIntegrity) continue
         for (const cup of ring) {
@@ -144,8 +164,6 @@ export function relaxStructure(world: World): number {
 
     for (const cup of world.cups) {
       if (!isAlive(cup) || cup.layer === 0) continue
-      // 必须"两只支撑都在"：杯要嵌在下层两只杯之间的杯缝里。
-      // 只剩一只 = 单点接触 = 悬挑 → 撑不住（这就是"倒三角撑不住"的判据）。
       const supporting = cup.supporters.every((id) => {
         const s = world.byId.get(id)
         return s ? isAlive(s) : false
@@ -161,7 +179,6 @@ export function relaxStructure(world: World): number {
 
 export function stepCup(cup: Cup, dtMs: number, world: World): void {
   if (cup.state === 'fallen') return
-  const dt = dtMs / 1000
 
   if (cup.state === 'toppled') {
     if (cup.fallT < 1) {
@@ -184,26 +201,8 @@ export function stepCup(cup: Cup, dtMs: number, world: World): void {
     return
   }
 
-  const sign = cup.tilt >= 0 ? 1 : -1
-  const tilt = Math.abs(cup.tilt)
-
-  if (tilt > world.cfg.frictionAngle) {
-    // 越过摩擦临界：重力主导，倾倒加速
-    cup.omega += world.cfg.toppleAccel * dt * sign
-    cup.omega -= cup.omega * world.cfg.damping * 0.25 * dt
-  } else {
-    // 静摩擦区：角速度被吃掉；倾角缓慢回正（τ≈1s），慢速单发只会"打歪"
-    cup.omega -= cup.omega * world.cfg.damping * dt
-    cup.tilt *= Math.max(0, 1 - world.cfg.tiltRelax * dt)
-    if (tilt < 0.004 && Math.abs(cup.omega) < 0.02) {
-      cup.tilt = 0
-      cup.omega = 0
-      cup.state = 'standing'
-    }
-  }
-
-  cup.tilt += cup.omega * dt
-  if (Math.abs(cup.tilt) >= world.cfg.toppleAngle) topple(cup, world)
+  // 站立：倾角完全由累计值决定（不回正、无角速度）
+  syncTilt(cup, world.cfg)
 }
 
 export function stepProjectile(p: Projectile, dtMs: number, cfg: PhysicsConfig): void {

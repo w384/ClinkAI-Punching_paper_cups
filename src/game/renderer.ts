@@ -10,6 +10,9 @@ const VIEW_H = 720
 const CUP_BASE_W = PAPER_TOWER.cupW
 const CUP_BASE_H = PAPER_TOWER.cupH
 
+/** 层高偏置：让上层杯底优先压住下层杯口（见 drawCups 注释） */
+const LAYER_BIAS = 0.004
+
 export interface RenderState {
   cups: Cup[]
   projectiles: Projectile[]
@@ -191,7 +194,10 @@ export class CupRenderer {
     const alive = s.cups.filter((c) => c.state !== 'fallen')
     const sortable = alive
       .map((cup) => ({ cup, p: project(cup, s.worldAngle, s.tower) }))
-      .sort((a, b) => a.p.depth - b.p.depth)
+      // 远 → 近绘制。层高偏置让"上层杯底"稳定压住"下层杯口"：
+      // 砖缝错位会带来 ~0.007 的深度抖动，偏置取 0.004/层（12 层合计 0.048）刚好盖过它，
+      // 又不至于打乱整圈的远近距离关系。
+      .sort((a, b) => a.p.depth + a.cup.layer * LAYER_BIAS - (b.p.depth + b.cup.layer * LAYER_BIAS))
 
     let idx = 0
     for (const { cup, p } of sortable) {
@@ -199,17 +205,22 @@ export class CupRenderer {
       if (!g) break
       g.visible = true
 
+      // 完全不通明：靠调亮/调暗表现纵深，避免后面的杯口从前面杯体里透出来
+      const lit = 0.72 + 0.28 * ((p.depth + 1) / 2)
+      const v = Math.round(255 * lit)
+      g.tint = (v << 16) | (v << 8) | v
+
       if (cup.state === 'toppled') {
         // 翻倒：绕杯底旋转到 ±90°，向外侧滑一点，末尾淡出
         g.position.set(p.x + cup.dir * 16 * cup.fallT, p.y)
         g.rotation = toppledTilt(cup)
-        g.alpha = cupAlpha(cup) * (0.6 + 0.4 * ((p.depth + 1) / 2))
+        g.alpha = cupAlpha(cup)
         g.scale.set(p.scale)
       } else {
         // 站立 / 歪斜：绕杯底倾斜
         g.position.set(p.x, p.y)
         g.rotation = cup.tilt
-        g.alpha = 0.55 + 0.45 * ((p.depth + 1) / 2)
+        g.alpha = 1
         g.scale.set(p.scale)
       }
     }

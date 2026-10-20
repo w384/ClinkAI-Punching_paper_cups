@@ -36,7 +36,13 @@ export const PAPER_TOWER: TowerConfig = {
   outerLayers: 0,
   outerRadius: 0,
   outerCount: 0,
-  rotationSpeed: 0.35,
+  /**
+   * 转盘角速度（rad/s）。
+   * 约束：一只杯在正前方停留的时间必须够打满 10 次计数门。
+   * 27 只杯 → 半格 = π/27 ≈ 0.116 rad，0.1 rad/s → 停留 ≈ 1.16s → 80ms 连发约 14 发。
+   * 转速调大会让命中摊到多只杯上，10 次永远凑不满。
+   */
+  rotationSpeed: 0.1,
   cupW: 28,
   cupH: 35,
   buildError: 0,
@@ -103,16 +109,16 @@ export function buildTower(cfg: TowerConfig, opts: BuildOptions = {}): BuiltTowe
           radius,
           layer: l,
           group,
-          mass: 1,
           tilt: err,
-          omega: 0,
+          tiltSum: 0,
+          hitCount: 0,
           state: 'standing',
           supporters: [],
           neighbors: [],
           fallT: 0,
           fallFrom: err,
           lieMs: 0,
-          dir: 1,
+          dir: i % 2 === 0 ? 1 : -1,
           pendingMs: 0,
         }
         ring.push(cup)
