@@ -2,7 +2,7 @@
 # 用法： .\scripts\deploy-remote.ps1
 param(
     [string]$Target = "root@106.53.200.115",
-    [string]$Key = "$env:USERPROFILE\.ssh\id_rsa_demo",
+    [string]$Key = "$env:USERPROFILE\.ssh\id_cupsplash_deploy",
     [string]$RemotePath = "/var/www/cupsplash/index.html",
     [string]$PublicUrl = "http://106.53.200.115/"
 )
